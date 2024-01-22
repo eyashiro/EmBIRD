@@ -1,0 +1,257 @@
+#!/bin/bash
+
+VERSIONNUMBER="1.0.0"
+
+#################################################################
+#
+# Embedded Barcoded Illumina Read Demultiplexer (EmBIRD)
+#
+# Author: Erika Yashiro, Ph.D.
+# Last modified: 3 November 2023
+#
+# embird [path to gz directory containing lane reads] [adapter barcode, primers list]
+#
+# The path to the gz directory typically contains all the reads from a single lane that have been divided into multiple files because of the size of the data. (parent path)
+# e.g. of parent path: /home/data/Campaign2020
+# e.g. of Col2 path: /home/data/Campaign2020/lane1
+# e.g. of Col2 data in samplesheet: lane1
+#
+# The adapter barcode and primers file should be in the current directory, and contain no path string.
+# The adapter barcode sequences list should have the following columns, separated by semi-colons, no spaces:
+# Col1: sample name
+# Col2: raw fastq directory in which sample belongs R1
+# Col3: raw fastq directory in which sample belongs R2
+# Col4: F primer
+# Col5: R primer
+# Col6: F barcode
+# Col7: R barcode
+# Col8: F linker
+# Col9: R linker
+#
+# Dependencies:
+#    cutadapt, currently v4.5
+#    zlib 1.2.6 or higher
+#    pigz 2.8 (for cutadapt to be able to use multicore)
+#
+# Cutadapt number of cores set to: 4
+#
+##################################################################
+
+# Set error check
+set -e
+set -o pipefail
+
+STARTTIME=$(date '+%Y%m%d-%H%M%S')
+
+echoWithDate() {
+  CURRENTTIME=[$(date '+%Y-%m-%d %H:%M:%S')]
+  echo "$CURRENTTIME: $1"
+  echo "$CURRENTTIME: $1" >> embird-$STARTTIME.log
+}
+
+
+# Check if output directories exist
+if [ -d "fastq_gz_samples" ]
+  then
+  echoWithDate "Directory fastqR1 exists. Exiting script."
+ rm -r fastq_gz_samples
+ #exit 1
+fi
+
+if [ -d "tempdir" ]
+  then
+  echoWithDate "Directory tempdir exists. Removing directory."
+  rm -rf tempdir
+fi
+
+echo "EMbedded Barcoded Illumina Read Demultiplexer, version $VERSIONNUMBER" > embird-$STARTTIME.log
+echo "" >> embird-$STARTTIME.log
+
+# Create new directories for putting the R1 and R2 fastq files.
+mkdir fastq_gz_samples tempdir
+
+# Path to fastq.gz files, parent directory
+GZDIR=$1
+echoWithDate "GZDIR is: $GZDIR"
+# adapter barcode sequences list file name
+SAMPLESFILE="$2"
+echoWithDate "SAMPLESFILE is: $SAMPLESFILE"
+
+# Create list of folders (lanes) with raw fastq.gz files
+RAWGZDIRLISTR1=$(sed '1d' $SAMPLESFILE | awk -F ";" '{ print $2 }' | sort | uniq)
+echoWithDate "Create list of folders (lanes) with raw fastq.gz files. RAWGZDIRLISTR1: $RAWGZDIRLISTR1"
+
+echoWithDate "Starting directory loop."
+for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LANE
+  do
+
+  # Col2: raw R1 fastq.gz folder
+  # GZDIRNAMER1
+  # Col3: raw R2 fastq.gz folder
+  GZDIRNAMER2=$(grep "$GZDIRNAMER1" $SAMPLESFILE | head -n 1 | awk -F ";" '{ print $3 }')
+
+  # Subset the samples list for the gzfile
+  # This will also remove the header line in the output file.
+  echoWithDate "Subset the samples list for the gzfile"
+  grep -w "$GZDIRNAMER1" $SAMPLESFILE > tempdir/gzsamplefile
+
+  # do following for each fastq.gz file in $GZDIRNAMER1 folder
+   # list of R1 gz files (the gz files are formatted like XXXX_R1_003.fastq.gz)
+   echoWithDate "Making list of R1 gz files, and creating list of sample suffixes."
+   GZFILES=$(ls $GZDIR/$GZDIRNAMER1 | grep "_R1_" | sed 's/\(.*_R1_\)\(.*.fastq.gz\)/\2/g' | sort -n)
+
+   echoWithDate "Starting directory/Lane loop."
+  for GZFILENAME in $GZFILES    # GZ FILE IN DIRECTORY/LANE
+    do
+    # Remove the .gz from the raw fastq file names
+    # Extract gz file into tempdir or memory
+    R1="_R1_"
+    R2="_R2_"
+    echoWithDate "gzipping input folder: $GZDIR/$GZDIRNAMER1/ file with extension: $R1$GZFILENAME"
+    FQR1=$(gzip -cd $GZDIR/$GZDIRNAMER1/*$R1$GZFILENAME)     # R1
+    echoWithDate "gzipping input folder: $GZDIR/$GZDIRNAMER1/ file with extension: $R2$GZFILENAME"
+    FQR2=$(gzip -cd $GZDIR/$GZDIRNAMER1/*$R2$GZFILENAME)     # R2
+
+    # INITIAL CLEANING OF RAW FASTQ FILE
+    # Extract header / machine name
+    HEADERID=$(echo "$FQR1" | sed -n '1p' | awk -F ":" '{ print $1 }')
+    echoWithDate "HEADERID: $HEADERID"
+
+    # Extract reads that passed filter (not 1:Y:0 or 2:Y:0)
+    # Replace 2:N: in R2 reads with 1:N: for all reads
+    echoWithDate "Extract reads that passed filter. Replace 2:N: in R2 reads with 1:N: for all reads."
+    FQR1pass=$(echo "$FQR1" | grep -A3 "1:N:0:" | sed '/^--$/d')
+    READNUM=$(echo "$FQR1pass" | grep -c "$HEADERID")  # count number of reads that passed filter R1
+    echoWithDate "Number of reads in FQR1pass: $READNUM"
+    FQR2pass=$(echo "$FQR2" | grep -A3 "2:N:0:" | sed -e '/^--$/d' -e 's/2:N:0/1:N:0/g')
+    READNUM=$(echo "$FQR2pass" | grep -c "$HEADERID")  # count number of reads that passed filter R2
+    echoWithDate "Number of reads in FQR2pass: $READNUM"
+    unset FQR1   # remove from memory
+    unset FQR2
+
+    # Retrieve reads containing F primer
+    echoWithDate "Retrieve reads containing F primer"
+      # Get F primer sequence
+    Fprimer=$(sed -n '1p' tempdir/gzsamplefile | awk -F ";" '{ print $4 }')
+    FREADS=$(echo "$FQR1pass" | grep -E -B1 -A2 "$Fprimer" | sed '/^--$/d')
+    FTMP=$(echo "$FQR2pass" | grep -E -B1 -A2 "$Fprimer" | sed '/^--$/d')
+    FREADS=$(echo "$FREADS"$'\n'"$FTMP")
+    unset FTMP
+    READNUM=$(echo "$FREADS" | grep -c "$HEADERID")
+    echoWithDate "Number of reads in FREADS: $READNUM"
+
+    # Get R primer sequence, grep R2 then R1 so that the order of reads are as close with Freads.fastq as possible
+    echoWithDate "Retrieve reads containing R primer"
+    Rprimer=$(sed -n '1p' tempdir/gzsamplefile | awk -F ";" '{ print $5 }')
+    RREADS=$(echo "$FQR2pass" | grep -E -B1 -A2 "$Rprimer" | sed '/^--$/d')
+    RTMP=$(echo "$FQR1pass" | grep -E -B1 -A2 "$Rprimer" | sed '/^--$/d')
+    RREADS=$(echo "$RREADS"$'\n'"$RTMP")
+    unset RTMP
+    unset FQR1pass  # remove from memory
+    unset FQR2pass
+    READNUM=$(echo "$RREADS" | grep -c "$HEADERID")
+    echoWithDate "Number of reads in RREADS: $READNUM"
+    echoWithDate ""
+
+    # Start demultiplexing samples from each raw fastq file
+    echoWithDate "Start demultiplexing samples from each raw fastq file"
+    while read LINE     # SAMPLES IN EACH GZ FILE
+      do
+      # Read the column information in the samples sheet
+      # Col1: sample name
+      SAMPLENAME=$(echo $LINE | awk -F ";" '{ print $1 }')
+      echoWithDate "Demultiplexing SAMPLE NAME: $SAMPLENAME"
+      # Col4: F primer
+      #Fprimer=$(echo $LINE | awk -F ";" '{ print $4 }')
+      # Col5: R primer
+      #Rprimer=$(echo $LINE | awk -F ";" '{ print $5 }')
+      # Col6: F barcode
+      Fbarcode=$(echo $LINE | awk -F ";" '{ print $6 }')
+      # Col7: R barcode
+      Rbarcode=$(echo $LINE | awk -F ";" '{ print $7 }')
+      # Col8: F linker
+      Flinker=$(echo $LINE | awk -F ";" '{ print $8 }')
+      # Col9: R linker
+      Rlinker=$(echo $LINE | awk -F ";" '{ print $9 }')
+
+      # Retrieve samples by barcode and linker
+      echoWithDate "Retreive samples by barcode and linker"
+      echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
+      FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "^$Fbarcode$Flinker$Fprimer" | sed '/^--$/d')
+      RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "^$Rbarcode$Rlinker$Rprimer" | sed '/^--$/d')
+      # Run a check on numbers
+      FNUM=$(echo "$FSAMPLE" | grep -c "$HEADERID")
+      RNUM=$(echo "$RSAMPLE" | grep -c "$HEADERID")
+      FBC=$(echo "$FSAMPLE" | grep -c "$Fbarcode$Flinker$Fprimer")
+      echoWithDate "FNUM: $FNUM;  RNUM: $RNUM; FbarcodeNum: $FBC"
+      echoWithDate "the above F values should be the same"
+      if [ "$FNUM" -eq "$FBC" ]
+        then
+        echoWithDate "The above F values are the same."
+        else
+          echoWithDate "WARNING: FNUM and FbarcodeNum are not the same. Something is wrong."
+      fi
+
+      # Retrieve list of reads that are not F-F or R-R
+      echoWithDate "Retrieve list of reads that are not F-F or R-R"
+      LISTF=$(echo "$FSAMPLE" | grep "$HEADERID" | sort | uniq -u)
+      LISTR=$(echo "$RSAMPLE" | grep "$HEADERID" | sort | uniq -u)
+
+      # Generate list of headers that have both F and R primers
+      echoWithDate "Generate list of headers that have both F and R primers"
+      LISTMASTER=$(echo "$LISTF"$'\n'"$LISTR" | sort | uniq -d)
+      TIMESTAMP=$(date +'%Y-%b-%H.%M.%S')
+      echo "$LISTMASTER" > tempdir/listmaster.$SAMPLENAME.$TIMESTAMP.txt
+      READNUM=$(echo "$LISTMASTER" | wc -l)
+      echoWithDate "Number of reads in LISTMASTER: $READNUM"
+      unset LISTF  # remove from memory
+      unset LISTR
+
+      # Retrieve reads using the final header list.
+      echoWithDate "Retrieve reads using the final header list."
+      grep  -A3 -wf <( echo "$LISTMASTER" ) <<< "$FSAMPLE" | sed '/^--$/d' > tempdir/Freads.sample.R1.fastq
+      grep  -A3 -wf <( echo "$LISTMASTER" ) <<< "$RSAMPLE" | sed '/^--$/d' > tempdir/Rreads.sample.R2.fastq
+      unset FSAMPLE   # remove from memory
+      unset RSAMPLE
+
+      # Replace R2 file's 1:N:0 to 2:N:0
+      echoWithDate "Replace R2 file's 1:N:0 to 2:N:0"
+      sed -i 's/1:N:0/2:N:0/g' tempdir/Rreads.sample.R2.fastq
+
+      # Trim adapter and linker sequences from reads and quality strings.
+      # Append the trimmed reads to the corresponding sample fastq file.
+      echoWithDate "Trim adapter and linker sequences from reads. Append the trimmed reads to the sample fastq file."
+      R1="_R1"
+      R2="_R2"
+      AMBI="NN"
+      echoWithDate "Trimming F: $Fbarcode$AMBI and R: $Rbarcode$AMBI using cutadapt"
+      #cutadapt -g "^FbarcodeNN" -o tempdir/Freads.sample.R1.trimmed.fastq tempdir/Freads.sample.R1.fastq
+      #cutadapt -g "^RbarcodeNN" -o tempdir/Freads.sample.R2.trimmed.fastq tempdir/Rreads.sample.R2.fastq
+      cutadapt --cores=4 -g "^$Fbarcode$AMBI" tempdir/Freads.sample.R1.fastq >> tempdir/$SAMPLENAME$R1.fastq 2>>cutadapt.report.txt
+      cutadapt --cores=4 -g "^$Rbarcode$AMBI" tempdir/Rreads.sample.R2.fastq >> tempdir/$SAMPLENAME$R2.fastq 2>>cutadapt.report.txt
+
+      echoWithDate ""
+      done < tempdir/gzsamplefile
+
+    done
+
+    # Make list of sample names in the directory/lane
+    SAMPLESLIST=$(awk -F ";" '{ print $1 }' tempdir/gzsamplefile)
+
+    # Compress samples file as *.gz and move the files to the samples folder
+    echoWithDate "Compress samples file as *.gz and move the files to the samples folder"
+    for SAMPLENAME in $SAMPLESLIST
+      do
+    gzip -c tempdir/$SAMPLENAME$R1.fastq > fastq_gz_samples/$SAMPLENAME$R1.fastq.gz
+    gzip -c tempdir/$SAMPLENAME$R2.fastq > fastq_gz_samples/$SAMPLENAME$R2.fastq.gz
+    # Remove temporary samples files
+    rm tempdir/$SAMPLENAME$R1.fastq tempdir/$SAMPLENAME$R2.fastq
+     done
+  done
+
+# Remove temporary folder
+# rm -r tempdir
+
+echoWithDate "EmBIRD job is done."
+exit 0
+
