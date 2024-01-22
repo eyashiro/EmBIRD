@@ -71,7 +71,7 @@ The sample names should not be replicated in the adapter barcode and primers fil
 To run emBIRD:
 ```
 # Go to the directory where the adapter barcode and primers list file is located.
-$ cd demultLib1
+$ cd demultLib
 
 # Make sure that EmBIRD and dependencies are accessible from your PATH
 $ echo $PATH
