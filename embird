@@ -1,15 +1,15 @@
 #!/bin/bash
 
-VERSIONNUMBER="1.0.0"
+VERSIONNUMBER="1.1.0"
 
 #################################################################
 #
 # Embedded Barcoded Illumina Read Demultiplexer (EmBIRD)
 #
 # Author: Erika Yashiro, Ph.D.
-# Last modified: 3 November 2023
+# Last modified: 29 February 2024
 #
-# embird [path to gz directory containing lane reads] [adapter barcode, primers list]
+# embird [path to gz directory containing lane reads] [adapter barcode, primers list file] [0 or 1 mismatch allowance in barcode]
 #
 # The path to the gz directory typically contains all the reads from a single lane that have been divided into multiple files because of the size of the data. (parent path)
 # e.g. of parent path: /home/data/Campaign2020
@@ -77,12 +77,20 @@ echoWithDate "GZDIR is: $GZDIR"
 SAMPLESFILE="$2"
 echoWithDate "SAMPLESFILE is: $SAMPLESFILE"
 
-# Create list of folders (lanes) with raw fastq.gz files
+# Create list of folders (LIBRARY) with raw fastq.gz files
 RAWGZDIRLISTR1=$(sed '1d' $SAMPLESFILE | awk -F ";" '{ print $2 }' | sort | uniq)
 echoWithDate "Create list of folders (lanes) with raw fastq.gz files. RAWGZDIRLISTR1: $RAWGZDIRLISTR1"
 
+# Read number of mismatches (0 or 1). Exit otherwise.
+MISMATCH=$3
+if [ $MISMATCH -gt 1 ]
+  then
+  echo "Mismatch allowance greater than 1 is not implemented in EmBIRD. Exiting."
+  exit
+fi
+
 echoWithDate "Starting directory loop."
-for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LANE
+for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
   do
 
   # Col2: raw R1 fastq.gz folder
@@ -100,8 +108,8 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LANE
    echoWithDate "Making list of R1 gz files, and creating list of sample suffixes."
    GZFILES=$(ls $GZDIR/$GZDIRNAMER1 | grep "_R1_" | sed 's/\(.*_R1_\)\(.*.fastq.gz\)/\2/g' | sort -n)
 
-   echoWithDate "Starting directory/Lane loop."
-  for GZFILENAME in $GZFILES    # GZ FILE IN DIRECTORY/LANE
+   echoWithDate "Starting directory/Library loop."
+  for GZFILENAME in $GZFILES    # GZ FILE IN DIRECTORY/LIBRARY
     do
     # Remove the .gz from the raw fastq file names
     # Extract gz file into tempdir or memory
@@ -176,20 +184,83 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LANE
 
       # Retrieve samples by barcode and linker
       echoWithDate "Retreive samples by barcode and linker"
+
+      # 0 mismatches allowed in primer barcode region
+      if [ $MISMATCH == 0 ]
+        then
       echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
+      echoWithDate "Mismatch allowance in each primer barcode: 0"
       FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "^$Fbarcode$Flinker$Fprimer" | sed '/^--$/d')
       RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "^$Rbarcode$Rlinker$Rprimer" | sed '/^--$/d')
+      fi
+
+      # 1 mismatch allowed in primer barcode region
+      if [ $MISMATCH == 1 ]
+        then
+        echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
+        echoWithDate "Mismatch allowance in each primer barcode: 1"
+        # make a list file barcode variants
+        # length of Fbarcode
+        BARCODELENGTH=$(echo "$Fbarcode" | awk '{ print length() }')
+
+        # remove temporary degenerate barcode list file, if any.
+        rm -f tempdir/FDegBC.txt tempdir/RDegBC.txt
+         # Set start position of degeneracy
+        POS=1
+
+        # Start generating degenerate F barcode with primers list.
+        while [ $POS -le $BARCODELENGTH ]
+          do
+          # Add degeneracy to a position of the barcode
+          FDegBarcode=$(echo "$Fbarcode" | awk -v pos=$POS -v repl="[ATGC]" '{ print substr($0,1,pos-1) repl substr($0, pos+1)}')
+          # Add barcode to temp file.
+          echo "^$FDegBarcode$Flinker$Fprimer" >> tempdir/FDegBC.txt
+            # Note: remove the _$Fbarcode from output file after testing.
+          # Count up 1 unit
+          POS=$((POS+1))
+          done
+        unset FDegBarcode
+        #cp tempdir/FDegBC_$Fbarcode.txt tempdir/FDegBC.txt
+
+        # length of Rbarcode
+        BARCODELENGTH=$(echo "$Rbarcode" | awk '{ print length() }')
+        # Set start position of degeneracy
+        POS=1
+
+        # Start generating R barcode list
+        while [ $POS -le $BARCODELENGTH ]
+          do
+          # Add degeneracy to a position of the reverse barcode
+          RDegBarcode=$(echo "$Rbarcode" | awk -v pos=$POS -v repl="[ATGC]" '{ print substr($0,1,pos-1) repl substr($0, pos+1)}')
+          # Add barcode to temp file
+          echo "^$RDegBarcode$Rlinker$Rprimer" >> tempdir/RDegBC.txt
+             # Note: remove the _$Rbarcode from output file after testing.
+          # Count up 1 unit
+          POS=$((POS+1))
+          done
+        unset RDegBarcode
+        #cp tempdir/RDegBC_$Rbarcode.txt tempdir/RDegBC.txt
+
+        # Make a linear string of all the barcoded primers
+        FDegBarcodes=$(cat tempdir/FDegBC.txt | tr "\n" "|" | sed 's/|$//g')
+        RDegBarcodes=$(cat tempdir/RDegBC.txt | tr "\n" "|" | sed 's/|$//g')
+
+        # Run grep with the list of barcoded primers
+        FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "$FDegBarcodes" | sed '/^--$/d')
+        RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "$RDegBarcodes" | sed '/^--$/d')
+      fi
+
       # Run a check on numbers
       FNUM=$(echo "$FSAMPLE" | grep -c "$HEADERID")
       RNUM=$(echo "$RSAMPLE" | grep -c "$HEADERID")
-      FBC=$(echo "$FSAMPLE" | grep -c "$Fbarcode$Flinker$Fprimer")
+      FBC=$(echo "$FSAMPLE" | grep -c "$Fbarcode$Flinker$Fprimer") # exact match search
       echoWithDate "FNUM: $FNUM;  RNUM: $RNUM; FbarcodeNum: $FBC"
       echoWithDate "the above F values should be the same"
       if [ "$FNUM" -eq "$FBC" ]
         then
         echoWithDate "The above F values are the same."
         else
-          echoWithDate "WARNING: FNUM and FbarcodeNum are not the same. Something is wrong."
+          echoWithDate "WARNING: FNUM and FbarcodeNum are not the same. Something may be wrong."
       fi
 
       # Retrieve list of reads that are not F-F or R-R
@@ -227,8 +298,8 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LANE
       echoWithDate "Trimming F: $Fbarcode$AMBI and R: $Rbarcode$AMBI using cutadapt"
       #cutadapt -g "^FbarcodeNN" -o tempdir/Freads.sample.R1.trimmed.fastq tempdir/Freads.sample.R1.fastq
       #cutadapt -g "^RbarcodeNN" -o tempdir/Freads.sample.R2.trimmed.fastq tempdir/Rreads.sample.R2.fastq
-      cutadapt --cores=4 -g "^$Fbarcode$AMBI" tempdir/Freads.sample.R1.fastq >> tempdir/$SAMPLENAME$R1.fastq 2>>cutadapt.report.txt
-      cutadapt --cores=4 -g "^$Rbarcode$AMBI" tempdir/Rreads.sample.R2.fastq >> tempdir/$SAMPLENAME$R2.fastq 2>>cutadapt.report.txt
+      cutadapt --cores=4 -g "^$Fbarcode$AMBI;max_errors=1" tempdir/Freads.sample.R1.fastq >> tempdir/$SAMPLENAME$R1.fastq 2>>cutadapt.report.txt
+      cutadapt --cores=4 -g "^$Rbarcode$AMBI;max_errors=1" tempdir/Rreads.sample.R2.fastq >> tempdir/$SAMPLENAME$R2.fastq 2>>cutadapt.report.txt
 
       echoWithDate ""
       done < tempdir/gzsamplefile
@@ -251,6 +322,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LANE
 
 # Remove temporary folder
 # rm -r tempdir
+rm tempdir/FDegBC.txt tempdir/RDegBC.txt
 
 echoWithDate "EmBIRD job is done."
 exit 0
