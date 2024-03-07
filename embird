@@ -11,6 +11,18 @@ VERSIONNUMBER="1.1.0"
 #
 # embird [path to gz directory containing lane reads] [adapter barcode, primers list file] [0 or 1 mismatch allowance in barcode]
 #
+# EmBIRD will demultiplex raw fastq.gz data with the following dual-barcoded configuration:
+# Fbarcde-Linker-Fprimer ----- Rprimer-Linker-Rbarcode
+#
+# 1 mismatch workflow
+# allows degenerate nucleotide codes
+# The pipeline first searches out the Fprimer and Rprimer with 2 mismatch allowance (no indels).
+# Next, the pipeline will search out the barcodes upstream of the primers with 1 mismatch allowance in the barcode region (no indels).
+# Finally, only the reads that with linked barcode-linker-primer are kept.
+#
+# 0 mismatch workflow
+# uses regex for degenerate positions in primers and linkers, e.g. [ATCG] for N.
+#
 # The path to the gz directory typically contains all the reads from a single lane that have been divided into multiple files because of the size of the data. (parent path)
 # e.g. of parent path: /home/data/Campaign2020
 # e.g. of Col2 path: /home/data/Campaign2020/lane1
@@ -89,6 +101,9 @@ if [ $MISMATCH -gt 1 ]
   exit
 fi
 
+# number of cores to use during cutadapt
+CORES=4
+
 echoWithDate "Starting directory loop."
 for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
   do
@@ -138,27 +153,65 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
     unset FQR2
 
     # Retrieve reads containing F primer
-    echoWithDate "Retrieve reads containing F primer"
+    #echoWithDate "Retrieve reads containing F primer"
       # Get F primer sequence
+    #Fprimer=$(sed -n '1p' tempdir/gzsamplefile | awk -F ";" '{ print $4 }')
+    #FREADS=$(echo "$FQR1pass" | grep -E -B1 -A2 "$Fprimer" | sed '/^--$/d')
+    #FTMP=$(echo "$FQR2pass" | grep -E -B1 -A2 "$Fprimer" | sed '/^--$/d')
+    #FREADS=$(echo "$FREADS"$'\n'"$FTMP")
+    #unset FTMP
+    #READNUM=$(echo "$FREADS" | grep -c "$HEADERID")
+    #echoWithDate "Number of reads in FREADS: $READNUM"
+
+    # cutadapt approach
+    echoWithDate "Retrieve reads containing both F and R primers. Mismatch allowance in primer region is 2 per primer."
+      # Get F and R primer sequences
     Fprimer=$(sed -n '1p' tempdir/gzsamplefile | awk -F ";" '{ print $4 }')
-    FREADS=$(echo "$FQR1pass" | grep -E -B1 -A2 "$Fprimer" | sed '/^--$/d')
-    FTMP=$(echo "$FQR2pass" | grep -E -B1 -A2 "$Fprimer" | sed '/^--$/d')
-    FREADS=$(echo "$FREADS"$'\n'"$FTMP")
-    unset FTMP
-    READNUM=$(echo "$FREADS" | grep -c "$HEADERID")
-    echoWithDate "Number of reads in FREADS: $READNUM"
+    Rprimer=$(sed -n '1p' tempdir/gzsamplefile | awk -F ";" '{ print $5 }')
+      # for cutadapt, make input fastq files
+    echo "$FQR1pass" > tempdir/FQR1pass.fastq
+    echo "$FQR2pass" > tempdir/FQR2pass.fastq
+      # Fprimer length
+    Flen=$(printf "$Fprimer" | wc -m)
+    Rlen=$(printf "$Rprimer" | wc -m)
+      # use cutadapt to retrieve reads with primers, allow 2 mismatches
+      # Forward direction
+    cutadapt --no-indels --core=4 --action=none --pair-adapters \
+             -g "$Fprimer;max_errors=2;min_overlap=$Flen" \
+             -G "$Rprimer;max_errors=2;min_overlap=$Rlen" \
+             -o tempdir/F-{name}.fastq \
+             -p tempdir/R-{name}.fastq \
+             tempdir/FQR1pass.fastq tempdir/FQR2pass.fastq
+             1>>cutadapt.report.txt 2>>cutadapt.report.txt
+    cutadapt --no-indels --core=4 --action=none --pair-adapters \
+             -g "$Fprimer;max_errors=2;min_overlap=$Flen" \
+             -G "$Rprimer;max_errors=2;min_overlap=$Rlen" \
+             -o tempdir/F2-{name}.fastq \
+             -p tempdir/R2-{name}.fastq \
+             tempdir/FQR2pass.fastq tempdir/FQR1pass.fastq
+             1>>cutadapt.report.txt 2>>cutadapt.report.txt
+      # Merge the 2 fastq files
+    cat tempdir/F2-1.fastq >> tempdir/F-1.fastq
+    cat tempdir/R2-1.fastq >> tempdir/R-1.fastq
+      # remove temporary files
+    rm tempdir/FQR1pass.fastq \
+      tempdir/FQR2pass.fastq \
+      tempdir/F2-1.fastq \
+      tempdir/R2-1.fastq \
+      tempdir/*unknown.fastq
 
     # Get R primer sequence, grep R2 then R1 so that the order of reads are as close with Freads.fastq as possible
-    echoWithDate "Retrieve reads containing R primer"
-    Rprimer=$(sed -n '1p' tempdir/gzsamplefile | awk -F ";" '{ print $5 }')
-    RREADS=$(echo "$FQR2pass" | grep -E -B1 -A2 "$Rprimer" | sed '/^--$/d')
-    RTMP=$(echo "$FQR1pass" | grep -E -B1 -A2 "$Rprimer" | sed '/^--$/d')
-    RREADS=$(echo "$RREADS"$'\n'"$RTMP")
-    unset RTMP
+    #echoWithDate "Retrieve reads containing R primer"
+    #Rprimer=$(sed -n '1p' tempdir/gzsamplefile | awk -F ";" '{ print $5 }')
+    #RREADS=$(echo "$FQR2pass" | grep -E -B1 -A2 "$Rprimer" | sed '/^--$/d')
+    #RTMP=$(echo "$FQR1pass" | grep -E -B1 -A2 "$Rprimer" | sed '/^--$/d')
+    #RREADS=$(echo "$RREADS"$'\n'"$RTMP")
+    #unset RTMP
     unset FQR1pass  # remove from memory
     unset FQR2pass
-    READNUM=$(echo "$RREADS" | grep -c "$HEADERID")
-    echoWithDate "Number of reads in RREADS: $READNUM"
+
+    #READNUM=$(echo "$RREADS" | grep -c "$HEADERID")
+    #echoWithDate "Number of reads in RREADS: $READNUM"
     echoWithDate ""
 
     # Start demultiplexing samples from each raw fastq file
@@ -190,65 +243,69 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
         then
       echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
       echoWithDate "Mismatch allowance in each primer barcode: 0"
+      FREADS=$(cat tempdir/F-1.fastq)
+      RREADS=$(cat tempdir/R-1.fastq)
       FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "^$Fbarcode$Flinker$Fprimer" | sed '/^--$/d')
       RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "^$Rbarcode$Rlinker$Rprimer" | sed '/^--$/d')
-      fi
+      #fi
 
       # 1 mismatch allowed in primer barcode region
-      if [ $MISMATCH == 1 ]
-        then
-        echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
-        echoWithDate "Mismatch allowance in each primer barcode: 1"
+      # if [ $MISMATCH == 1 ]
+      #  then
+      #  echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
+      #  echoWithDate "Mismatch allowance in each primer barcode: 1"
         # make a list file barcode variants
         # length of Fbarcode
-        BARCODELENGTH=$(echo "$Fbarcode" | awk '{ print length() }')
+        #BARCODELENGTH=$(echo "$Fbarcode" | awk '{ print length() }')
 
         # remove temporary degenerate barcode list file, if any.
-        rm -f tempdir/FDegBC.txt tempdir/RDegBC.txt
+        #rm -f tempdir/FDegBC.txt tempdir/RDegBC.txt
          # Set start position of degeneracy
-        POS=1
+        #POS=1
 
         # Start generating degenerate F barcode with primers list.
-        while [ $POS -le $BARCODELENGTH ]
-          do
-          # Add degeneracy to a position of the barcode
-          FDegBarcode=$(echo "$Fbarcode" | awk -v pos=$POS -v repl="[ATGC]" '{ print substr($0,1,pos-1) repl substr($0, pos+1)}')
-          # Add barcode to temp file.
-          echo "^$FDegBarcode$Flinker$Fprimer" >> tempdir/FDegBC.txt
-            # Note: remove the _$Fbarcode from output file after testing.
-          # Count up 1 unit
-          POS=$((POS+1))
-          done
-        unset FDegBarcode
-        #cp tempdir/FDegBC_$Fbarcode.txt tempdir/FDegBC.txt
+        #while [ $POS -le $BARCODELENGTH ]
+        #  do
+        #  # Add degeneracy to a position of the barcode
+        #  FDegBarcode=$(echo "$Fbarcode" | awk -v pos=$POS -v repl="[ATGC]" '{ print substr($0,1,pos-1) repl substr($0, pos+1)}')
+        #  # Add barcode to temp file.
+        #  echo "^$FDegBarcode$Flinker$Fprimer" >> tempdir/FDegBC.txt
+        #    # Note: remove the _$Fbarcode from output file after testing.
+        #  # Count up 1 unit
+        #  POS=$((POS+1))
+        #  done
+        #unset FDegBarcode
 
         # length of Rbarcode
-        BARCODELENGTH=$(echo "$Rbarcode" | awk '{ print length() }')
+        #BARCODELENGTH=$(echo "$Rbarcode" | awk '{ print length() }')
         # Set start position of degeneracy
-        POS=1
+        #POS=1
 
         # Start generating R barcode list
-        while [ $POS -le $BARCODELENGTH ]
-          do
-          # Add degeneracy to a position of the reverse barcode
-          RDegBarcode=$(echo "$Rbarcode" | awk -v pos=$POS -v repl="[ATGC]" '{ print substr($0,1,pos-1) repl substr($0, pos+1)}')
-          # Add barcode to temp file
-          echo "^$RDegBarcode$Rlinker$Rprimer" >> tempdir/RDegBC.txt
-             # Note: remove the _$Rbarcode from output file after testing.
-          # Count up 1 unit
-          POS=$((POS+1))
-          done
-        unset RDegBarcode
-        #cp tempdir/RDegBC_$Rbarcode.txt tempdir/RDegBC.txt
+        #while [ $POS -le $BARCODELENGTH ]
+        #  do
+        #  # Add degeneracy to a position of the reverse barcode
+        #  RDegBarcode=$(echo "$Rbarcode" | awk -v pos=$POS -v repl="[ATGC]" '{ print substr($0,1,pos-1) repl substr($0, pos+1)}')
+        #  # Add barcode to temp file
+        #  echo "^$RDegBarcode$Rlinker$Rprimer" >> tempdir/RDegBC.txt
+        #     # Note: remove the _$Rbarcode from output file after testing.
+        #  # Count up 1 unit
+        #  POS=$((POS+1))
+        #  done
+        #unset RDegBarcode
+
 
         # Make a linear string of all the barcoded primers
-        FDegBarcodes=$(cat tempdir/FDegBC.txt | tr "\n" "|" | sed 's/|$//g')
-        RDegBarcodes=$(cat tempdir/RDegBC.txt | tr "\n" "|" | sed 's/|$//g')
+        #FDegBarcodes=$(cat tempdir/FDegBC.txt | tr "\n" "|" | sed 's/|$//g')
+        #RDegBarcodes=$(cat tempdir/RDegBC.txt | tr "\n" "|" | sed 's/|$//g')
 
         # Run grep with the list of barcoded primers
-        FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "$FDegBarcodes" | sed '/^--$/d')
-        RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "$RDegBarcodes" | sed '/^--$/d')
-      fi
+        #FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "$FDegBarcodes" | sed '/^--$/d')
+        #RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "$RDegBarcodes" | sed '/^--$/d')
+
+        # use the cutadapt option to demultiplex => further down this script.
+
+      #fi
 
       # Run a check on numbers
       FNUM=$(echo "$FSAMPLE" | grep -c "$HEADERID")
@@ -284,6 +341,36 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
       grep  -A3 -wf <( echo "$LISTMASTER" ) <<< "$RSAMPLE" | sed '/^--$/d' > tempdir/Rreads.sample.R2.fastq
       unset FSAMPLE   # remove from memory
       unset RSAMPLE
+     fi # this is end of workflow with zero mismatches
+
+     # 1 mismatch allowed in primer barcode region
+      if [ $MISMATCH == 1 ]
+       then
+       echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
+       echoWithDate "Mismatch allowance in each primer barcode: 1"
+       # Retireve all reads containing the barcode pairs.
+       cutadapt --no-indels --core=$CORES --action=retain --pair-adapters \
+                 -g "^$Fbarcode;max_errors=1" \
+                 -G "^$Rbarcode;max_errors=1" \
+                 -o tempdir/Fbc-{name}.fastq \
+                 -p tempdir/Rbc-{name}.fastq \
+                 tempdir/F-1.fastq tempdir/R-1.fastq 1>>cutadapt.report.txt 2>>cutadapt.report.txt
+
+       # Filter out reads that do not have the exact configuration barcode-linker-primer
+       cutadapt --no-indels --core=$CORES --action=retain --pair-adapters \
+                -g "^$Fbarcode$Flinker$Fprimer;max_errors=3" \
+                -G "^$Rbarcode$Rlinker$Rprimer;max_errors=3" \
+                -o tempdir/Fbc2-{name}.fastq \
+                -p tempdir/Rbc2-{name}.fastq \
+                tempdir/Fbc-1.fastq tempdir/Rbc-1.fastq 2>> cutadapt.report.txt 1>> cutadapt.report.txt
+
+       # remove unknown fastq files.
+       rm tempdir/*unknown.fastq
+       # rename cutadapt output fastq files
+       mv tempdir/Fbc2-1.fastq tempdir/Freads.sample.R1.fastq
+       mv tempdir/Rbc2-1.fastq tempdir/Rreads.sample.R2.fastq
+
+      fi  # this is end of workflow with 1 mismatch in the barcodes
 
       # Replace R2 file's 1:N:0 to 2:N:0
       echoWithDate "Replace R2 file's 1:N:0 to 2:N:0"
@@ -294,12 +381,11 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
       echoWithDate "Trim adapter and linker sequences from reads. Append the trimmed reads to the sample fastq file."
       R1="_R1"
       R2="_R2"
-      AMBI="NN"
-      echoWithDate "Trimming F: $Fbarcode$AMBI and R: $Rbarcode$AMBI using cutadapt"
-      #cutadapt -g "^FbarcodeNN" -o tempdir/Freads.sample.R1.trimmed.fastq tempdir/Freads.sample.R1.fastq
-      #cutadapt -g "^RbarcodeNN" -o tempdir/Freads.sample.R2.trimmed.fastq tempdir/Rreads.sample.R2.fastq
-      cutadapt --cores=4 -g "^$Fbarcode$AMBI;max_errors=1" tempdir/Freads.sample.R1.fastq >> tempdir/$SAMPLENAME$R1.fastq 2>>cutadapt.report.txt
-      cutadapt --cores=4 -g "^$Rbarcode$AMBI;max_errors=1" tempdir/Rreads.sample.R2.fastq >> tempdir/$SAMPLENAME$R2.fastq 2>>cutadapt.report.txt
+      FAMBI="$Flinker"
+      RAMBI="$Rlinker"
+      echoWithDate "Trimming F: $Fbarcode$FAMBI and R: $Rbarcode$RAMBI using cutadapt"
+      cutadapt --cores=$CORES -g "^$Fbarcode$FAMBI;max_errors=1" tempdir/Freads.sample.R1.fastq >> tempdir/$SAMPLENAME$R1.fastq 2>>cutadapt.report.txt
+      cutadapt --cores=$CORES -g "^$Rbarcode$RAMBI;max_errors=1" tempdir/Rreads.sample.R2.fastq >> tempdir/$SAMPLENAME$R2.fastq 2>>cutadapt.report.txt
 
       echoWithDate ""
       done < tempdir/gzsamplefile
@@ -322,7 +408,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
 
 # Remove temporary folder
 # rm -r tempdir
-rm tempdir/FDegBC.txt tempdir/RDegBC.txt
+rm -f tempdir/FDegBC.txt tempdir/RDegBC.txt
 
 echoWithDate "EmBIRD job is done."
 exit 0
