@@ -7,7 +7,7 @@ VERSIONNUMBER="1.1.0"
 # Embedded Barcoded Illumina Read Demultiplexer (EmBIRD)
 #
 # Author: Erika Yashiro, Ph.D.
-# Last modified: 29 February 2024
+# Last modified: 7 March 2024
 #
 # embird [path to gz directory containing lane reads] [adapter barcode, primers list file] [0 or 1 mismatch allowance in barcode]
 #
