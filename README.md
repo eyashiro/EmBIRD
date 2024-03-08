@@ -79,5 +79,5 @@ $ echo $PATH
 # Run EmBIRD
 $ embird [path to gz directory containing library reads] [adapter barcode & primers list file] [0 or 1 mismatches allowed in barcodes]
 # example:
-embird /home/data/Campaign2020 samplessheet.txt
+embird /home/data/Campaign2020 samplessheet.txt 1
 ```
