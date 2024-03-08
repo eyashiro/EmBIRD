@@ -2,11 +2,11 @@
 
 # Embedded Barcoded Illumina Read Demultiplexer (EmBIRD)
 
-Last modified: 22 January 2024
+Last modified: 8 March 2024
 
 Author: Erika Yashiro, Ph.D.
 
-Version: 1.0.0
+Version: 1.1.1
 
 
 EmBIRD will demultiplex Illumina fastq amplicon DNA reads according to the nucleotide barcodes embedded upstream of the forward and the reverse PCR primers. Variable-lengthed barcodes are accepted and a linker region between the barcode and PCR primers should be indicated. The current version of EmBIRD expects barcodes to be present upstream of both forward and reverse primers. EmBird will automatically sort the reads so that in the final output files, the reads containing the forward primers are in the R1 files and the reads with the reverse primers are in the R2 files.
@@ -54,7 +54,7 @@ $ /home/data/Campaign2020/Lib3
 The adapter barcode and primers file should be placed in the working directory where you want your output data to written to. When specifying the adapter barcode primers file, the file name should contain no path string.
 
 The adapter barcode and primers file should list the following columns in this order, separated by a semi-colon, no spaces:
-
+* Row1: title of the columns.
 * Col1: sample name (no spaces, use alphanumeric characters, - and _)
 * Col2: raw fastq.gz directory name in which sample belongs R1 (in our example: Lib1, Lib2, Lib3)
 * Col3: raw fastq.gz directory name in which sample belongs R2
@@ -77,7 +77,7 @@ $ cd demultLib
 $ echo $PATH
 
 # Run EmBIRD
-$ embird [path to gz directory containing library reads] [adapter barcode & primers list file]
+$ embird [path to gz directory containing library reads] [adapter barcode & primers list file] [0 or 1 mismatches allowed in barcodes]
 # example:
 embird /home/data/Campaign2020 samplessheet.txt
 ```
