@@ -65,7 +65,7 @@ echoWithDate() {
 # Check if output directories exist
 if [ -d "fastq_gz_samples" ]
   then
-  echoWithDate "Directory fastqR1 exists. Exiting script."
+  echoWithDate "Directory fastqR1 exists. Removing directory."
  rm -r fastq_gz_samples
  #exit 1
 fi
@@ -247,6 +247,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
       RREADS=$(cat tempdir/R-1.fastq)
       FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "^$Fbarcode$Flinker$Fprimer" | sed '/^--$/d')
       RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "^$Rbarcode$Rlinker$Rprimer" | sed '/^--$/d')
+      rm tempdir/F-1.fastq temdpr/R-1.fastq
       #fi
 
       # 1 mismatch allowed in primer barcode region
@@ -363,6 +364,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
                 -o tempdir/Fbc2-{name}.fastq \
                 -p tempdir/Rbc2-{name}.fastq \
                 tempdir/Fbc-1.fastq tempdir/Rbc-1.fastq 2>> cutadapt.report.txt 1>> cutadapt.report.txt
+       rm tempdir/Fbc-1.fastq tempdir/Rbc-1.fastq
 
        # remove unknown fastq files.
        rm tempdir/*unknown.fastq
@@ -389,7 +391,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
 
       echoWithDate ""
       done < tempdir/gzsamplefile
-
+      rm tempdir/F-1.fastq tempdir/R-1.fastq
     done
 
     # Make list of sample names in the directory/lane
