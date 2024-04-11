@@ -1,13 +1,13 @@
 #!/bin/bash
 
-VERSIONNUMBER="1.1.0"
+VERSIONNUMBER="1.1.2"
 
 #################################################################
 #
 # Embedded Barcoded Illumina Read Demultiplexer (EmBIRD)
 #
 # Author: Erika Yashiro, Ph.D.
-# Last modified: 7 March 2024
+# Last modified: 15 March 2024
 #
 # embird [path to gz directory containing lane reads] [adapter barcode, primers list file] [0 or 1 mismatch allowance in barcode]
 #
@@ -16,7 +16,7 @@ VERSIONNUMBER="1.1.0"
 #
 # 1 mismatch workflow
 # allows degenerate nucleotide codes
-# The pipeline first searches out the Fprimer and Rprimer with 2 mismatch allowance (no indels).
+# The pipeline first searches out the Fprimer and Rprimer with 3 mismatch allowance (no indels).
 # Next, the pipeline will search out the barcodes upstream of the primers with 1 mismatch allowance in the barcode region (no indels).
 # Finally, only the reads that with linked barcode-linker-primer are kept.
 #
@@ -121,7 +121,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
   # do following for each fastq.gz file in $GZDIRNAMER1 folder
    # list of R1 gz files (the gz files are formatted like XXXX_R1_003.fastq.gz)
    echoWithDate "Making list of R1 gz files, and creating list of sample suffixes."
-   GZFILES=$(ls $GZDIR/$GZDIRNAMER1 | grep "_R1_" | sed 's/\(.*_R1_\)\(.*.fastq.gz\)/\2/g' | sort -n)
+   GZFILES=$(ls $GZDIR/$GZDIRNAMER1 | grep "_R1_" | sed 's/\(.*_R1_\)\(...\)\(.*.fastq.gz\)/\2/g' | sort -n)
 
    echoWithDate "Starting directory/Library loop."
   for GZFILENAME in $GZFILES    # GZ FILE IN DIRECTORY/LIBRARY
@@ -131,9 +131,9 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
     R1="_R1_"
     R2="_R2_"
     echoWithDate "gzipping input folder: $GZDIR/$GZDIRNAMER1/ file with extension: $R1$GZFILENAME"
-    FQR1=$(gzip -cd $GZDIR/$GZDIRNAMER1/*$R1$GZFILENAME)     # R1
+    FQR1=$(gzip -cd $GZDIR/$GZDIRNAMER1/*$R1$GZFILENAME*.fastq.gz)     # R1
     echoWithDate "gzipping input folder: $GZDIR/$GZDIRNAMER1/ file with extension: $R2$GZFILENAME"
-    FQR2=$(gzip -cd $GZDIR/$GZDIRNAMER1/*$R2$GZFILENAME)     # R2
+    FQR2=$(gzip -cd $GZDIR/$GZDIRNAMER1/*$R2$GZFILENAME*.fastq.gz)     # R2
 
     # INITIAL CLEANING OF RAW FASTQ FILE
     # Extract header / machine name
@@ -177,15 +177,15 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
       # use cutadapt to retrieve reads with primers, allow 2 mismatches
       # Forward direction
     cutadapt --no-indels --core=4 --action=none --pair-adapters \
-             -g "$Fprimer;max_errors=2;min_overlap=$Flen" \
-             -G "$Rprimer;max_errors=2;min_overlap=$Rlen" \
+             -g "$Fprimer;max_errors=3;min_overlap=$Flen" \
+             -G "$Rprimer;max_errors=3;min_overlap=$Rlen" \
              -o tempdir/F-{name}.fastq \
              -p tempdir/R-{name}.fastq \
              tempdir/FQR1pass.fastq tempdir/FQR2pass.fastq
              1>>cutadapt.report.txt 2>>cutadapt.report.txt
     cutadapt --no-indels --core=4 --action=none --pair-adapters \
-             -g "$Fprimer;max_errors=2;min_overlap=$Flen" \
-             -G "$Rprimer;max_errors=2;min_overlap=$Rlen" \
+             -g "$Fprimer;max_errors=3;min_overlap=$Flen" \
+             -G "$Rprimer;max_errors=3;min_overlap=$Rlen" \
              -o tempdir/F2-{name}.fastq \
              -p tempdir/R2-{name}.fastq \
              tempdir/FQR2pass.fastq tempdir/FQR1pass.fastq
@@ -243,11 +243,19 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
         then
       echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
       echoWithDate "Mismatch allowance in each primer barcode: 0"
+
+       # convert IUPAC code to regex
+      FprimerREGEX=$(printf "$Fprimer" | sed -e 's/R/[AG]/g' -e 's/Y/[CT]/g' -e 's/S/[GC]/g' -e 's/W/[AT]/g' -e 's/K/[GT]/g' -e 's/M/[AC]/g' -e 's/B/[CGT]/g' -e 's/D/[AGT]/g' -e 's/H/[ACT]/g' -e 's/V/[ACG]/g' -e 's/N/[ATGC]/g')
+      RprimerREGEX=$(printf "$Rprimer" | sed -e 's/R/[AG]/g' -e 's/Y/[CT]/g' -e 's/S/[GC]/g' -e 's/W/[AT]/g' -e 's/K/[GT]/g' -e 's/M/[AC]/g' -e 's/B/[CGT]/g' -e 's/D/[AGT]/g' -e 's/H/[ACT]/g' -e 's/V/[ACG]/g' -e 's/N/[ATGC]/g')
+      FlinkerREGEX=$(printf "$Flinker" | sed -e 's/R/[AG]/g' -e 's/Y/[CT]/g' -e 's/S/[GC]/g' -e 's/W/[AT]/g' -e 's/K/[GT]/g' -e 's/M/[AC]/g' -e 's/B/[CGT]/g' -e 's/D/[AGT]/g' -e 's/H/[ACT]/g' -e 's/V/[ACG]/g' -e 's/N/[ATGC]/g')
+      RlinkerREGEX=$(printf "$Rlinker" | sed -e 's/R/[AG]/g' -e 's/Y/[CT]/g' -e 's/S/[GC]/g' -e 's/W/[AT]/g' -e 's/K/[GT]/g' -e 's/M/[AC]/g' -e 's/B/[CGT]/g' -e 's/D/[AGT]/g' -e 's/H/[ACT]/g' -e 's/V/[ACG]/g' -e 's/N/[ATGC]/g')
+      echoWithDate "Converted primer sequence to regex: $Fbarcode$FlinkerREGEX$FprimerREGEX and $Rbarcode$RlinkerREGEX$RprimerREGEX"
+
       FREADS=$(cat tempdir/F-1.fastq)
       RREADS=$(cat tempdir/R-1.fastq)
-      FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "^$Fbarcode$Flinker$Fprimer" | sed '/^--$/d')
-      RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "^$Rbarcode$Rlinker$Rprimer" | sed '/^--$/d')
-      rm tempdir/F-1.fastq temdpr/R-1.fastq
+      FSAMPLE=$(echo "$FREADS" | grep -E -B1 -A2 "^$Fbarcode$FlinkerREGEX$FprimerREGEX" | sed '/^--$/d')
+      RSAMPLE=$(echo "$RREADS" | grep -E -B1 -A2 "^$Rbarcode$RlinkerREGEX$RprimerREGEX" | sed '/^--$/d')
+
       #fi
 
       # 1 mismatch allowed in primer barcode region
@@ -311,7 +319,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
       # Run a check on numbers
       FNUM=$(echo "$FSAMPLE" | grep -c "$HEADERID")
       RNUM=$(echo "$RSAMPLE" | grep -c "$HEADERID")
-      FBC=$(echo "$FSAMPLE" | grep -c "$Fbarcode$Flinker$Fprimer") # exact match search
+      FBC=$(echo "$FSAMPLE" | grep -c "$Fbarcode$FlinkerREGEX$FprimerREGEX") # exact match search
       echoWithDate "FNUM: $FNUM;  RNUM: $RNUM; FbarcodeNum: $FBC"
       echoWithDate "the above F values should be the same"
       if [ "$FNUM" -eq "$FBC" ]
@@ -359,8 +367,8 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
 
        # Filter out reads that do not have the exact configuration barcode-linker-primer
        cutadapt --no-indels --core=$CORES --action=retain --pair-adapters \
-                -g "^$Fbarcode$Flinker$Fprimer;max_errors=3" \
-                -G "^$Rbarcode$Rlinker$Rprimer;max_errors=3" \
+                -g "^$Fbarcode$Flinker$Fprimer;max_errors=4" \
+                -G "^$Rbarcode$Rlinker$Rprimer;max_errors=4" \
                 -o tempdir/Fbc2-{name}.fastq \
                 -p tempdir/Rbc2-{name}.fastq \
                 tempdir/Fbc-1.fastq tempdir/Rbc-1.fastq 2>> cutadapt.report.txt 1>> cutadapt.report.txt
@@ -391,7 +399,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
 
       echoWithDate ""
       done < tempdir/gzsamplefile
-      rm tempdir/F-1.fastq tempdir/R-1.fastq
+      rm -f tempdir/F-1.fastq tempdir/R-1.fastq
     done
 
     # Make list of sample names in the directory/lane
@@ -399,13 +407,18 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
 
     # Compress samples file as *.gz and move the files to the samples folder
     echoWithDate "Compress samples file as *.gz and move the files to the samples folder"
+    mkdir tempdir/tmp
     for SAMPLENAME in $SAMPLESLIST
       do
-    gzip -c tempdir/$SAMPLENAME$R1.fastq > fastq_gz_samples/$SAMPLENAME$R1.fastq.gz
-    gzip -c tempdir/$SAMPLENAME$R2.fastq > fastq_gz_samples/$SAMPLENAME$R2.fastq.gz
+    #gzip -c tempdir/$SAMPLENAME$R1.fastq > fastq_gz_samples/$SAMPLENAME$R1.fastq.gz
+    #gzip -c tempdir/$SAMPLENAME$R2.fastq > fastq_gz_samples/$SAMPLENAME$R2.fastq.gz
     # Remove temporary samples files
-    rm tempdir/$SAMPLENAME$R1.fastq tempdir/$SAMPLENAME$R2.fastq
+    #rm tempdir/$SAMPLENAME$R1.fastq tempdir/$SAMPLENAME$R2.fastq
+    mv tempdir/$SAMPLENAME$R1.fastq tempdir/tmp/.
+    mv tempdir/$SAMPLENAME$R2.fastq tempdir/tmp/.
      done
+    pigz -p $CORES tempdir/tmp/*.fastq
+    mv tempdir/tmp/* fastq_gz_samples/.
   done
 
 # Remove temporary folder
