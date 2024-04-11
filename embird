@@ -1,13 +1,13 @@
 #!/bin/bash
 
-VERSIONNUMBER="1.1.2"
+VERSIONNUMBER="1.1.3"
 
 #################################################################
 #
 # Embedded Barcoded Illumina Read Demultiplexer (EmBIRD)
 #
 # Author: Erika Yashiro, Ph.D.
-# Last modified: 15 March 2024
+# Last modified: 11 April 2024
 #
 # embird [path to gz directory containing lane reads] [adapter barcode, primers list file] [0 or 1 mismatch allowance in barcode]
 #
@@ -21,15 +21,24 @@ VERSIONNUMBER="1.1.2"
 # Finally, only the reads that with linked barcode-linker-primer are kept.
 #
 # 0 mismatch workflow
-# uses regex for degenerate positions in primers and linkers, e.g. [ATCG] for N.
+# Searches for exact match to barcode-linker-primer region.
 #
 # The path to the gz directory typically contains all the reads from a single lane that have been divided into multiple files because of the size of the data. (parent path)
 # e.g. of parent path: /home/data/Campaign2020
 # e.g. of Col2 path: /home/data/Campaign2020/lane1
 # e.g. of Col2 data in samplesheet: lane1
 #
+# Each library of reads must be split into multiple smaller files.
+# For 2x101bp, split into files with maximum 4 million reads/file
+# For 2x151bp, split into max 2 million reads/file.
+# The fastq.gz files should have the following format: xxx_R1_001.fastq.gz
+# You can use the bash split command for this. Here is the command for 2M/file.
+# split -l 8000000 --numeric-suffixes=001 --additional-suffix=".fastq" BA22V5_1_L3_R1_001_n63igoks.fastq BA22V5_1_L3_R1_0
+# For 4M/file, use the "-l 16000000 " option instead.
+#
 # The adapter barcode and primers file should be in the current directory, and contain no path string.
-# The adapter barcode sequences list should have the following columns, separated by semi-colons, no spaces:
+# The nucleotide sequences should be in IUPAC code, not regex.
+# The samples file should have the following columns, separated by semi-colons, no spaces:
 # Col1: sample name
 # Col2: raw fastq directory in which sample belongs R1
 # Col3: raw fastq directory in which sample belongs R2
@@ -46,8 +55,19 @@ VERSIONNUMBER="1.1.2"
 #    pigz 2.8 (for cutadapt to be able to use multicore)
 #
 # Cutadapt number of cores set to: 4
+# Number of mismatches in each primer region is set to $PRIMERMISMATCHES=3
 #
 ##################################################################
+
+##### Parameters #####
+
+# Number of cores to use during cutadapt
+CORES=4
+
+# Number of mismatches in each primer region:
+PRIMERMISMATCHES=3
+
+#######################
 
 # Set error check
 set -e
@@ -93,16 +113,14 @@ echoWithDate "SAMPLESFILE is: $SAMPLESFILE"
 RAWGZDIRLISTR1=$(sed '1d' $SAMPLESFILE | awk -F ";" '{ print $2 }' | sort | uniq)
 echoWithDate "Create list of folders (lanes) with raw fastq.gz files. RAWGZDIRLISTR1: $RAWGZDIRLISTR1"
 
-# Read number of mismatches (0 or 1). Exit otherwise.
+# Read number of mismatches in the barcode region (0 or 1). Exit otherwise.
 MISMATCH=$3
 if [ $MISMATCH -gt 1 ]
   then
-  echo "Mismatch allowance greater than 1 is not implemented in EmBIRD. Exiting."
+  echo "Mismatch allowance greater than 1 in the barcode region is not implemented in EmBIRD. Exiting."
   exit
 fi
 
-# number of cores to use during cutadapt
-CORES=4
 
 echoWithDate "Starting directory loop."
 for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
@@ -120,8 +138,19 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
 
   # do following for each fastq.gz file in $GZDIRNAMER1 folder
    # list of R1 gz files (the gz files are formatted like XXXX_R1_003.fastq.gz)
+   # Note that NovaSeq reads could come in single larger gz files and have a file name format R1_001_xxx.fastq.gz. These will not be compatible with this script.
+   echoWithDate "Checking fastq.gz file format..."
+     # Retrieve the first R1 fastq.gz entry name. Extract only any characters between R1_001 and fastq.gz. There should be any for the script to work.
+   GZFILES=$(ls $GZDIR/$GZDIRNAMER1 | grep "_R1_" | sed 's/\(.*_R1_\)\(...\)\(.*\)\(.fastq.gz\)/\3/g' | sed -n '1p')
+   if [ -n "$GZFILES" ]
+     then
+     echoWithDate "The file name format of the fastq.gz files are not compatible with the EmBIRD workflow. It suggests that you have a single large file that may cause problems when inputted to memmory. Please read the instructions at the beginning of the script about file name format and make sure that your data are split into subfiles with about 2M-4M reads/file."
+     echoWithDate "Exiting script."
+     exit
+   fi
+
    echoWithDate "Making list of R1 gz files, and creating list of sample suffixes."
-   GZFILES=$(ls $GZDIR/$GZDIRNAMER1 | grep "_R1_" | sed 's/\(.*_R1_\)\(...\)\(.*.fastq.gz\)/\2/g' | sort -n)
+   GZFILES=$(ls $GZDIR/$GZDIRNAMER1 | grep "_R1_" | sed 's/\(.*_R1_\)\(.*.fastq.gz\)/\2/g' | sort -n)
 
    echoWithDate "Starting directory/Library loop."
   for GZFILENAME in $GZFILES    # GZ FILE IN DIRECTORY/LIBRARY
@@ -131,9 +160,9 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
     R1="_R1_"
     R2="_R2_"
     echoWithDate "gzipping input folder: $GZDIR/$GZDIRNAMER1/ file with extension: $R1$GZFILENAME"
-    FQR1=$(gzip -cd $GZDIR/$GZDIRNAMER1/*$R1$GZFILENAME*.fastq.gz)     # R1
+    FQR1=$(pigz -cd $GZDIR/$GZDIRNAMER1/*$R1$GZFILENAME)     # R1
     echoWithDate "gzipping input folder: $GZDIR/$GZDIRNAMER1/ file with extension: $R2$GZFILENAME"
-    FQR2=$(gzip -cd $GZDIR/$GZDIRNAMER1/*$R2$GZFILENAME*.fastq.gz)     # R2
+    FQR2=$(pigz -cd $GZDIR/$GZDIRNAMER1/*$R2$GZFILENAME)     # R2
 
     # INITIAL CLEANING OF RAW FASTQ FILE
     # Extract header / machine name
@@ -174,22 +203,28 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
       # Fprimer length
     Flen=$(printf "$Fprimer" | wc -m)
     Rlen=$(printf "$Rprimer" | wc -m)
-      # use cutadapt to retrieve reads with primers, allow 2 mismatches
+      # use cutadapt to retrieve reads with primers, allow $PRIMERMISMATCHES mismatches
       # Forward direction
     cutadapt --no-indels --core=4 --action=none --pair-adapters \
-             -g "$Fprimer;max_errors=3;min_overlap=$Flen" \
-             -G "$Rprimer;max_errors=3;min_overlap=$Rlen" \
+             -g "$Fprimer;max_errors=$PRIMERMISMATCHES;min_overlap=$Flen" \
+             -G "$Rprimer;max_errors=$PRIMERMISMATCHES;min_overlap=$Rlen" \
              -o tempdir/F-{name}.fastq \
              -p tempdir/R-{name}.fastq \
-             tempdir/FQR1pass.fastq tempdir/FQR2pass.fastq
+             tempdir/FQR1pass.fastq tempdir/FQR2pass.fastq \
              1>>cutadapt.report.txt 2>>cutadapt.report.txt
+    echo "" >> cutadapt.report.txt
+    echo "" >> cutadapt.report.txt
+
     cutadapt --no-indels --core=4 --action=none --pair-adapters \
-             -g "$Fprimer;max_errors=3;min_overlap=$Flen" \
-             -G "$Rprimer;max_errors=3;min_overlap=$Rlen" \
+             -g "$Fprimer;max_errors=$PRIMERMISMATCHES;min_overlap=$Flen" \
+             -G "$Rprimer;max_errors=$PRIMERMISMATCHES;min_overlap=$Rlen" \
              -o tempdir/F2-{name}.fastq \
              -p tempdir/R2-{name}.fastq \
-             tempdir/FQR2pass.fastq tempdir/FQR1pass.fastq
+             tempdir/FQR2pass.fastq tempdir/FQR1pass.fastq \
              1>>cutadapt.report.txt 2>>cutadapt.report.txt
+    echo "" >> cutadapt.report.txt
+    echo "" >> cutadapt.report.txt
+
       # Merge the 2 fastq files
     cat tempdir/F2-1.fastq >> tempdir/F-1.fastq
     cat tempdir/R2-1.fastq >> tempdir/R-1.fastq
@@ -356,6 +391,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
       if [ $MISMATCH == 1 ]
        then
        echoWithDate "Searching F: $Fbarcode$Flinker$Fprimer and R: $Rbarcode$Rlinker$Rprimer"
+       echoWithDate "Mismatch allowance in each primer region: $PRIMERMISMATCHES"
        echoWithDate "Mismatch allowance in each primer barcode: 1"
        # Retireve all reads containing the barcode pairs.
        cutadapt --no-indels --core=$CORES --action=retain --pair-adapters \
@@ -364,6 +400,8 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
                  -o tempdir/Fbc-{name}.fastq \
                  -p tempdir/Rbc-{name}.fastq \
                  tempdir/F-1.fastq tempdir/R-1.fastq 1>>cutadapt.report.txt 2>>cutadapt.report.txt
+       echo "" >> cutadapt.report.txt
+       echo "" >> cutadapt.report.txt
 
        # Filter out reads that do not have the exact configuration barcode-linker-primer
        cutadapt --no-indels --core=$CORES --action=retain --pair-adapters \
@@ -372,6 +410,9 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
                 -o tempdir/Fbc2-{name}.fastq \
                 -p tempdir/Rbc2-{name}.fastq \
                 tempdir/Fbc-1.fastq tempdir/Rbc-1.fastq 2>> cutadapt.report.txt 1>> cutadapt.report.txt
+       echo "" >> cutadapt.report.txt
+       echo "" >> cutadapt.report.txt
+
        rm tempdir/Fbc-1.fastq tempdir/Rbc-1.fastq
 
        # remove unknown fastq files.
@@ -395,7 +436,12 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
       RAMBI="$Rlinker"
       echoWithDate "Trimming F: $Fbarcode$FAMBI and R: $Rbarcode$RAMBI using cutadapt"
       cutadapt --cores=$CORES -g "^$Fbarcode$FAMBI;max_errors=1" tempdir/Freads.sample.R1.fastq >> tempdir/$SAMPLENAME$R1.fastq 2>>cutadapt.report.txt
+      echo "" >> cutadapt.report.txt
+      echo "" >> cutadapt.report.txt
+
       cutadapt --cores=$CORES -g "^$Rbarcode$RAMBI;max_errors=1" tempdir/Rreads.sample.R2.fastq >> tempdir/$SAMPLENAME$R2.fastq 2>>cutadapt.report.txt
+      echo "" >> cutadapt.report.txt
+      echo "" >> cutadapt.report.txt
 
       echoWithDate ""
       done < tempdir/gzsamplefile
@@ -419,6 +465,7 @@ for GZDIRNAMER1 in $RAWGZDIRLISTR1  # DIRECTORY/LIBRARY
      done
     pigz -p $CORES tempdir/tmp/*.fastq
     mv tempdir/tmp/* fastq_gz_samples/.
+    rm -r tempdir/tmp
   done
 
 # Remove temporary folder
